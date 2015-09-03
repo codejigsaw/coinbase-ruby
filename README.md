@@ -24,10 +24,10 @@ Or install it yourself as:
 
 Start by [enabling an API Key on your account](https://coinbase.com/settings/api)
 
-Next, create an instance of the client and pass it your API Key + Secret as parameters.
+Next, create an instance of the client and pass it your API Key + Secret as parameters, along with options (if wanting to use sandbox).
 
 ```ruby
-coinbase = Coinbase::Client.new(ENV['COINBASE_API_KEY'], ENV['COINBASE_API_SECRET'])
+coinbase = Coinbase::Client.new(ENV['COINBASE_API_KEY'], ENV['COINBASE_API_SECRET'], { :base_uri => 'https://api.sandbox.coinbase.com/v1', :site => 'https://sandbox.coinbase.com', :sandbox => true })
 ```
 
 ### OAuth 2.0 Authentication (for accessing others' accounts)
