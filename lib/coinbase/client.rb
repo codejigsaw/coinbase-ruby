@@ -10,20 +10,39 @@ module Coinbase
   class Client
     include HTTParty
 
-    BASE_URI = 'https://coinbase.com/api/v1'
+    BASE_URI = 'https://api.coinbase.com/v1'
+    SITE = 'https://coinbase.com'
+    SANDBOX = false
 
     def initialize(api_key='', api_secret='', options={})
       @api_key = api_key
       @api_secret = api_secret
+      @site = SITE
+      @sandbox = SANDBOX
 
       # defaults
       options[:base_uri] ||= BASE_URI
       @base_uri = options[:base_uri]
+      options[:site] ||= SITE
+      @site = options[:site]
+      options[:sandbox] ||= SANDBOX
+      @sandbox = options[:sandbox]
       options[:format]   ||= :json
       options.each do |k,v|
         self.class.send k, v
       end
     end
+
+    def self.site(uri=nil)
+      return default_options[:site] unless uri
+      default_options[:site] = HTTParty.normalize_base_uri(uri)
+    end
+
+    def self.sandbox(sandbox_enabled=false)
+      return default_options[:sandbox] unless sandbox_enabled
+      default_options[:sandbox] = sandbox_enabled
+    end
+
 
     # Account
 
@@ -64,11 +83,11 @@ module Coinbase
       if r.success?
         r.embed_html = case options[:button_mode]
                        when 'page'
-                         %[<a href="https://coinbase.com/checkouts/#{r.button.code}" target="_blank"><img alt="#{r.button.text}" src="https://coinbase.com/assets/buttons/#{r.button.style}.png"></a>]
+                         %[<a href="#{@site}/checkouts/#{r.button.code}" target="_blank"><img alt="#{r.button.text}" src="#{@site}/assets/buttons/#{r.button.style}.png"></a>]
                        when 'iframe'
-                          %[<iframe src="https://coinbase.com/inline_payments/#{r.button.code}" style="width:500px;height:160px;border:none;box-shadow:0 1px 3px rgba(0,0,0,0.25);overflow:hidden;" scrolling="no" allowtransparency="true" frameborder="0"></iframe>]
+                          %[<iframe src="#{@site}/inline_payments/#{r.button.code}" style="width:500px;height:160px;border:none;box-shadow:0 1px 3px rgba(0,0,0,0.25);overflow:hidden;" scrolling="no" allowtransparency="true" frameborder="0"></iframe>]
                        else
-                         %[<div class="coinbase-button" data-code="#{r.button.code}"></div><script src="https://coinbase.com/assets/button.js" type="text/javascript"></script>]
+                         %[<div class="coinbase-button" data-code="#{r.button.code}" #{@sandbox ? 'data-env="sandbox"' : ''}></div><script src="#{@site}/assets/button.js" type="text/javascript"></script>]
                        end
       end
       r
@@ -76,6 +95,10 @@ module Coinbase
 
     def create_order_for_button button_id
       post "/buttons/#{button_id}/create_order"
+    end
+
+    def button_orders button_id
+      get "/buttons/#{button_id}/orders"
     end
 
     # Addresses
@@ -139,7 +162,22 @@ module Coinbase
       put "/transactions/#{transaction_id}/complete_request"
     end
 
+    # Orders
+    def orders
+      get "/orders"
+    end
+
+    def order order_id_or_custom
+      r = get "/orders/#{order_id_or_custom}"
+      convert_money_objects(r.order)
+      r
+    end
+
     # Users
+
+    def current_user
+      get '/users/self'
+    end
 
     def create_user email, password=nil, client_id=nil, scopes=nil
       password ||= SecureRandom.urlsafe_base64(12)
@@ -175,8 +213,8 @@ module Coinbase
 
     # Buys
 
-    def buy! qty
-      r = post '/buys', {qty: qty}
+    def buy! qty, options = {}
+      r = post '/buys', options.merge({qty: qty})
       r = convert_money_objects(r)
       r.transfer.payout_date = Time.parse(r.transfer.payout_date) rescue nil
       r
@@ -264,23 +302,41 @@ module Coinbase
 
       signature = OpenSSL::HMAC.hexdigest(OpenSSL::Digest.new('sha256'), @api_secret, hmac_message)
 
-      headers = {
+      headers = build_headers({
         'ACCESS_KEY' => @api_key,
         'ACCESS_SIGNATURE' => signature,
         'ACCESS_NONCE' => nonce.to_s,
         "Content-Type" => "application/json",
-      }
+      }, options)
 
       request_options[:headers] = headers
 
       r = self.class.send(verb, path, request_options.merge(ssl_options))
-      hash = Hashie::Mash.new(JSON.parse(r.body))
+      handle_response(r)
+    end
+
+    class Error < StandardError; end
+    class TwoFactorAuthError < StandardError; end
+
+    protected
+
+    def build_headers headers, options
+      if options[:token_2fa] && options[:token_2fa].to_i > 0
+        headers['CB-2FA-Token'] = options[:token_2fa]
+        options.delete(:token_2fa)
+      end
+      headers
+    end
+
+    def handle_response res
+      status = res.respond_to?(:code) ? res.code : res.status
+      hash = Hashie::Mash.new(JSON.parse(res.body))
+      # Handle 2FA generically
+      raise TwoFactorAuthError.new(hash.error) if status === 402
       raise Error.new(hash.error) if hash.error
       raise Error.new(hash.errors.join(", ")) if hash.errors
       hash
     end
-
-    class Error < StandardError; end
 
     private
 
